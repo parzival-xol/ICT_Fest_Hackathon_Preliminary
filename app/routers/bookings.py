@@ -129,6 +129,7 @@ def create_booking(
 
     stats.record_create(room.id, price_cents)
     cache.invalidate_availability(room.id, start.date().isoformat())
+    cache.invalidate_report(room.org_id)
     notifications.notify_created(booking)
 
     return serialize_booking(booking)
@@ -218,6 +219,7 @@ def cancel_booking(
         refund_percent = 0
 
     with _booking_lock:
+        db.refresh(booking)
         if booking.status == "cancelled":
             raise AppError(409, "ALREADY_CANCELLED", "Booking already cancelled")
 
