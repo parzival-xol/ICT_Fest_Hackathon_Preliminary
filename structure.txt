@@ -1,0 +1,195 @@
+================================================================================
+  CoWork — Coworking Space Booking API — Project Structure
+================================================================================
+
+1. OVERVIEW
+--------------------------------------------------------------------------------
+CoWork is a REST API for managing bookable rooms inside a coworking space
+across multiple tenant organizations. Built with Python 3.11, FastAPI,
+SQLAlchemy, and SQLite. Uses JWT authentication (HS256) with access + refresh
+tokens. Runs in a single Docker container on port 8000.
+
+2. DIRECTORY TREE
+--------------------------------------------------------------------------------
+
+ICT_Fest_Hackathon_Preliminary/
+├── .dockerignore              # Files excluded from Docker build context
+├── .gitignore                 # Files excluded from Git tracking
+├── docker-compose.yml         # Docker Compose service definition
+├── Dockerfile                 # Docker image build instructions
+├── README.md                  # Project documentation and API contract
+├── requirements.txt           # Python package dependencies
+├── cowork.db                  # SQLite database file (runtime)
+├── structure.txt              # THIS FILE - project structure overview
+├── app/                       # Main application package
+│   ├── __init__.py            # Package marker (empty)
+│   ├── main.py                # FastAPI application entrypoint
+│   ├── config.py              # Environment-based configuration
+│   ├── database.py            # SQLAlchemy engine and session management
+│   ├── models.py              # SQLAlchemy ORM models
+│   ├── schemas.py             # Pydantic request/response models
+│   ├── serializers.py         # Response serialization helpers
+│   ├── errors.py              # Application error type and handler
+│   ├── auth.py                # Authentication: password hashing, JWT, deps
+│   ├── cache.py               # In-memory response caches
+│   ├── timeutils.py           # Datetime parsing and ISO 8601 formatting
+│   ├── routers/               # API route handlers
+│   │   ├── __init__.py        # Package marker (empty)
+│   │   ├── health.py          # GET /health - liveness check
+│   │   ├── auth.py            # POST /auth/register, /login, /refresh, /logout
+│   │   ├── rooms.py           # GET/POST /rooms, availability, stats
+│   │   ├── bookings.py        # POST /bookings, GET /bookings, cancel
+│   │   └── admin.py           # GET /admin/usage-report, /admin/export
+│   └── services/             # Business logic and side-effect services
+│       ├── __init__.py        # Package marker (empty)
+│       ├── export.py          # CSV export generation
+│       ├── notifications.py   # Simulated email + audit-log side effects
+│       ├── ratelimit.py       # Per-user rolling-window rate limiter
+│       ├── reference.py       # Unique booking reference code generator
+│       ├── refunds.py         # Refund calculation and ledger logging
+│       └── stats.py           # Live incremental per-room booking stats
+└── tests/                     # Test suite
+    ├── __init__.py            # Package marker (empty)
+    └── test_smoke.py          # Happy-path smoke test (pytest)
+
+
+3. FILE-BY-FILE DESCRIPTION
+--------------------------------------------------------------------------------
+
+Root-level files:
+
+  .dockerignore
+      - Excludes __pycache__, *.pyc, *.db, venv, .git, PROJECT_SPEC.md
+        from Docker build context.
+
+  .gitignore
+      - Excludes __pycache__, *.pyc, *.db, venv, .pytest_cache from Git.
+
+  docker-compose.yml
+      - Single "api" service, builds from Dockerfile, port 8000.
+      - Sets JWT_SECRET and DATABASE_URL env vars.
+      - Persists SQLite data via named Docker volume "cowork-data".
+
+  Dockerfile
+      - Based on python:3.11-slim, installs deps, runs uvicorn on port 8000.
+
+  requirements.txt
+      - fastapi==0.111.0, uvicorn[standard]==0.30.1, SQLAlchemy==2.0.30,
+        pydantic==2.7.1, PyJWT==2.8.0
+
+  cowork.db
+      - SQLite database file created at runtime (gitignored).
+
+app/ - Main application:
+
+  app/__init__.py
+      - Empty package marker.
+
+  app/main.py
+      - Creates FastAPI app, auto-creates DB schema, registers error handler,
+        includes all routers: health, auth, rooms, bookings, admin.
+
+  app/config.py
+      - Environment config: JWT_SECRET, JWT_ALGORITHM (HS256),
+        ACCESS_TOKEN_EXPIRE_MINUTES (15), REFRESH_TOKEN_EXPIRE_DAYS (7),
+        DATABASE_URL.
+
+  app/database.py
+      - SQLAlchemy engine (check_same_thread=False, timeout=30).
+      - SessionLocal sessionmaker, declarative_base(), get_db() generator.
+
+  app/models.py
+      - 4 ORM models: Organization, User, Room, Booking, RefundLog.
+      - Relationships: Booking.refunds -> RefundLog list.
+
+  app/schemas.py
+      - Pydantic models: RegisterRequest, LoginRequest, RefreshRequest,
+        RoomCreateRequest, BookingCreateRequest.
+
+  app/serializers.py
+      - serialize_booking(): Booking ORM -> dict with ISO 8601 timestamps.
+
+  app/errors.py
+      - AppError exception (status_code, code, detail).
+      - app_error_handler -> JSONResponse.
+
+  app/auth.py
+      - PBKDF2-HMAC-SHA256 password hashing.
+      - JWT creation/decoding (HS256) with sub, org, role, jti, iat, exp.
+      - Token revocation via in-memory JTI blacklist.
+      - Dependencies: get_token_payload, get_current_user, require_admin.
+
+  app/cache.py
+      - In-memory caches for usage reports and room availability.
+      - Invalidated when underlying data changes.
+
+  app/timeutils.py
+      - parse_input_datetime(): ISO 8601 -> naive UTC datetime.
+      - iso_utc(): naive UTC datetime -> ISO 8601 with explicit UTC.
+
+app/routers/ - API route handlers:
+
+  app/routers/health.py
+      - GET /health -> {"status": "ok"} (no auth).
+
+  app/routers/auth.py
+      - POST /auth/register (201) - register admin or member.
+      - POST /auth/login (200) - returns access + refresh tokens.
+      - POST /auth/refresh (200) - rotate tokens.
+      - POST /auth/logout (200) - revoke access token.
+
+  app/routers/rooms.py
+      - GET /rooms (200) - list org rooms.
+      - POST /rooms (201) - create room (admin).
+      - GET /rooms/{id}/availability?date= (200) - busy intervals.
+      - GET /rooms/{id}/stats (200) - live booking count and revenue.
+
+  app/routers/bookings.py
+      - POST /bookings (201) - create with conflict + quota checks.
+      - GET /bookings (200) - paginated list.
+      - GET /bookings/{id} (200) - detail with refunds.
+      - POST /bookings/{id}/cancel (200) - cancel with refund.
+
+  app/routers/admin.py
+      - GET /admin/usage-report (200) - per-room usage/revenue (admin).
+      - GET /admin/export (200) - CSV export (admin).
+
+app/services/ - Business logic:
+
+  app/services/export.py
+      - Generates CSV string of bookings filtered by org, user, room.
+
+  app/services/notifications.py
+      - Simulated email + audit-log with thread locks.
+
+  app/services/ratelimit.py
+      - Per-user rolling window: 20 req / 60s. Raises 429 on excess.
+
+  app/services/reference.py
+      - Monotonic counter -> "CW-XXXXXX" codes.
+
+  app/services/refunds.py
+      - Calculates refund amount, creates RefundLog entry.
+
+  app/services/stats.py
+      - In-memory incremental per-room count and revenue.
+
+tests/ - Tests:
+
+  tests/test_smoke.py
+      - Single happy-path test: health -> register -> login ->
+        create room -> create booking -> list bookings.
+
+
+4. API ENDPOINT SUMMARY
+--------------------------------------------------------------------------------
+
+  Method  Path                          Auth    Status  Description
+  ------  ----------------------------   ------  ------  -------------------------
+  GET     /health                       No      200     Liveness check
+  POST    /auth/register                No      201     Register admin or member
+  POST    /auth/login                   No      200     Login, get tokens
+  POST    /auth/refresh                 No      200     Rotate tokens
+  POST    /auth/logout                  Yes     200     Revoke access token
+  GET     /rooms                        Yes     200     List org rooms
+  POST    /rooms    

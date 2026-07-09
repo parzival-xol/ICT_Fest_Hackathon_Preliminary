@@ -4,13 +4,14 @@ from datetime import datetime, time, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from .. import cache
 from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..errors import AppError
 from ..models import Booking, Room, User
 from ..schemas import RoomCreateRequest
-from ..services import stats
 from ..timeutils import iso_utc
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -77,13 +78,16 @@ def availability(
 
     day_start = datetime.combine(day, time.min)
     day_end = day_start + timedelta(days=1)
+    # Find all confirmed bookings that overlap with the target day.
+    # Standard interval-overlap: two intervals [A,B) and [C,D) overlap
+    # iff A < D AND C < B.
     bookings = (
         db.query(Booking)
         .filter(
             Booking.room_id == room.id,
             Booking.status == "confirmed",
-            Booking.start_time >= day_start,
             Booking.start_time < day_end,
+            Booking.end_time > day_start,
         )
         .order_by(Booking.start_time.asc(), Booking.id.asc())
         .all()
@@ -107,9 +111,18 @@ def room_stats(
     user: User = Depends(get_current_user),
 ):
     room = _get_org_room(db, room_id, user.org_id)
-    current = stats.get(room.id)
+    live_count = (
+        db.query(func.count(Booking.id))
+        .filter(Booking.room_id == room.id, Booking.status == "confirmed")
+        .scalar()
+    )
+    live_revenue = (
+        db.query(func.coalesce(func.sum(Booking.price_cents), 0))
+        .filter(Booking.room_id == room.id, Booking.status == "confirmed")
+        .scalar()
+    )
     return {
         "room_id": room.id,
-        "total_confirmed_bookings": current["count"],
-        "total_revenue_cents": current["revenue"],
+        "total_confirmed_bookings": live_count,
+        "total_revenue_cents": live_revenue,
     }
